@@ -1,0 +1,817 @@
+---
+title: "Projekt grupowy"
+author: 
+  - Jakub Nowakowski
+  - Michał Sagan
+  - Piotr Wróbel
+date: "2023-06-14"
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rio)
+library(tidyverse)
+library(kableExtra)
+library(psych)
+library(factoextra)
+library(ggpubr)
+library(gridExtra)
+library(reshape2)
+library(cluster)
+library(caret)
+library(keras)
+library(shiny)
+library(e1071)
+library(xgboost)
+library(randomForest)
+```
+
+Celem projektu grupowego jest sprawdzenie umiejętności z zakresu budowy oraz wykorzystania modeli sieci neuronowych opartych na klasyfikacji lub regresji w celu analizy większych zbiorów danych, a także z zakresu przygotowania danych do takowej obróbki.
+
+Projekt ten obejmuje również prezentację i porównanie wybranych metod redukcji wymiarów oraz grupowania obserwacji. Choć zastosowanie tego typu metod oznacza częściową utratę wariancji oryginalnych danych, pozwala również na uniknięcie zjawisk nieporządanych:
+  
++ mniejsza liczba wymiarów oznacza szybsze uczenie modeli i mniejszą ilość wykorzystanych zasobów do obliczeń;
+
++ redukcja wymiarów zmniejsza ryzyko przetrenowania modelu oraz związanej z tym zjawiskiem utraty dokładności budowanego modelu;
+
++ pozwala na wykorzystanie danych charakteryzujących się wysoką koleracją między wybranymi zmiennymi, których analiza bez uprzedniej obróbki mogłaby się zakończyć uzyskaniem niedokładnych wyników;
+
+# Wybór i przygotowowanie zbioru danych
+
+Pierwszym krokiem w celu realizacji projektu był wybór odpowiedniego zbioru danych zawierającego odpowiednio przygotowane dane umożliwiające zastosowanie wybranego modelu sieci neuronowej. Poniższy dokument powstał w oparciu o zbiór danych **Red Wine Quality** przygotowany przez zespół prowadzony przez Paulo Corteza w wersji dostępnej [na portalu Kaggle](https://www.kaggle.com/uciml/red-wine-quality-cortez-et-al-2009).
+
+```{r, include=FALSE}
+wine_data <- read.csv("winequality-red.csv")
+```
+
+Wybrany zbiór składa się z 1599 próbek czerwonego wina. Każda próbka składa się z 12 kolumn opisujących różne cechy badanej obserwacji:
+  
+  Kolumna                   Opis
+----------------------    ------------------------------
+  `fixed acidity`           określona kwasowość próbki
+`volatile acidity`        kwasowość lotna wina
+`citric acid`             zawartość kwasu cytrynowego
+`residual sugar`          zawartość osadu cukrowego po procesie fermentacji
+`chlorides`               zawartość chlorków
+`free sulfur dioxide`     wolny dwutlenek siarki występujący w próbce
+`total sulfur dioxide`    całkowita zawartość dwutlenku siarki
+`density`                 gęstość trunku
+`pH`                      poziom pH
+`sulphates`               zawartość siarczanów w winie
+`alcohol`                 zawartość alkoholu
+`quality`                 ocena jakości wina w zakresie od 0 do 10
+
+Fragment zbioru danych przedstawiony został poniżej:
+  
+```{r, echo=FALSE}
+head(wine_data[1:6]) %>% kable() %>% kable_styling(full_width=T)
+head(wine_data[7:12]) %>% kable() %>% kable_styling(full_width=T)
+```
+
+Poniżej przedstawiono również podsumowanie kolumm wskazujące na podstawowe dane statystyczne poszczególnych cechwystępujących w zbiorze (minimum, maksimum, średnią, medianę etc.):
+  
+```{r, echo=FALSE}
+options(digits = 3)
+wine_summary <- as.data.frame(apply(wine_data, 2, summary))
+
+rownames(wine_summary) <- c("Minimum", "Pierwszy kwartyl", "Mediana", "Średnia", "Trzeci kwartyl", "Maksimum")
+head(wine_summary[1:6]) %>% kable() %>% kable_styling(full_width=T)
+head(wine_summary[7:12]) %>% kable() %>% kable_styling(full_width=T)
+```
+
+Ostatecznym celem projektu jest przeprowadzenie regresji wielokrotnej oceny jakości wina względem pozostałych zmiennych objaśniajacych przedstawionych wyżej.
+
+W związku z powyższym przed przystąpieniem do analizy usuwamy poszukiwaną zmienną `quality`, by nie zaburzała pracy modelu. Dalsza obróbka danych nie była wymagana w tym zbiorze — zbiór okazał się kompletny i gotowy do analizy.
+
+```{r, include=FALSE}
+wine <- wine_data %>% select(-quality)
+```
+
+Jednocześnie na tym etapie analizy nie możemy wykluczyć problemu współliniowosci zmiennych objasniajacych. W celu usunięcia zjawiska współliniowosci przed budową modelu należy wyznaczyć składowe główne.
+
+
+
+# Budowa modeli regresji
+
+## Wizualizacja rozkładu wartości zmiennej zależnej - quality
+
+```{r, echo=FALSE, include=TRUE}
+ggplot(wine_data, aes(x = quality)) +
+  geom_histogram(binwidth = 1, fill = "yellow", color = "black") +
+  labs(title = "Rozkład jakości wina", x = "Jakość", y = "Liczebność")
+```
+<br/>Podzieliliśmy dane na zbiór uczący(80% danych) oraz testowy(20% danych). Do zbioru treningowego wybraliśmy wszystkiee cechy poza ostatnią, czyli zmienną zależną(quality).
+Następnie wytrenowaliśmy 4 modele - KNN, SVM, XGBoost oraz Las Losowy
+```{r, echo=FALSE, include=FALSE}
+
+# Podział zbioru na zbiór uczący i testowy
+set.seed(123) # Ustawienie ziarna dla powtarzalności wyników
+train_indices <- createDataPartition(wine_data$quality, p = 0.8, list = FALSE)
+train_data <- wine_data[train_indices, ]
+test_data <- wine_data[-train_indices, ]
+
+# Przygotowanie danych
+train_x <- train_data[, -12] # Wybór wszystkich cech, oprócz zmiennej zależnej (quality)
+train_y <- train_data$quality
+test_x <- test_data[, -12]
+test_y <- test_data$quality
+
+# Trenowanie modelu KNN
+knn_model <- train(train_x, train_y, method = "knn", preProcess = c("center", "scale"))
+knn_predictions <- predict(knn_model, test_x)
+knn_r2 <- cor(knn_predictions, test_y)^2
+knn_rmse <- sqrt(mean((knn_predictions - test_y)^2))
+knn_mae <- mean(abs(knn_predictions - test_y))
+
+# Trenowanie modelu SVM
+svm_model <- svm(train_x, train_y)
+svm_predictions <- predict(svm_model, test_x)
+svm_r2 <- cor(svm_predictions, test_y)^2
+svm_rmse <- sqrt(mean((svm_predictions - test_y)^2))
+svm_mae <- mean(abs(svm_predictions - test_y))
+
+# Trenowanie modelu XGBoost
+xgb_model <- xgboost(data = as.matrix(train_x), label = train_y, nrounds = 10)
+xgb_predictions <- predict(xgb_model, as.matrix(test_x))
+xgb_r2 <- cor(xgb_predictions, test_y)^2
+xgb_rmse <- sqrt(mean((xgb_predictions - test_y)^2))
+xgb_mae <- mean(abs(xgb_predictions - test_y))
+
+# Trenowanie modelu Random Forest
+rf_model <- randomForest(train_x, train_y)
+rf_predictions <- predict(rf_model, test_x)
+rf_r2 <- cor(rf_predictions, test_y)^2
+rf_rmse <- sqrt(mean((rf_predictions - test_y)^2))
+rf_mae <- mean(abs(rf_predictions - test_y))
+```
+## Wyświetlenie metryk jakości działania modeli<br/>
+```{r, echo=FALSE, include=TRUE}
+# Tworzenie tabeli HTML
+table_html <- data.frame(
+  Model = c("KNN", "SVM", "XGBoost", "Random Forest"),
+  R2 = c(round(knn_r2, 4), round(svm_r2, 4), round(xgb_r2, 4), round(rf_r2, 4)),
+  RMSE = c(round(knn_rmse, 4), round(svm_rmse, 4), round(xgb_rmse, 4), round(rf_rmse, 4)),
+  MAE = c(round(knn_mae, 4), round(svm_mae, 4), round(xgb_mae, 4), round(rf_mae, 4))
+)
+
+table_html <- kable(table_html, format = "html", digits = 4, align = "c") %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+# Wyświetlanie tabeli HTML
+HTML(table_html)
+```
+
+## Wykresy porównujące metryki dla modeli
+
+```{r, echo=FALSE, include=TRUE}
+# Przygotowanie danych
+models <- c("KNN", "SVM", "XGBoost", "Random Forest")
+r2 <- c(knn_r2, svm_r2, xgb_r2, rf_r2)
+rmse <- c(knn_rmse, svm_rmse, xgb_rmse, rf_rmse)
+mae <- c(knn_mae, svm_mae, xgb_mae, rf_mae)
+
+# Data frame z metrykami
+metrics_df <- data.frame(Model = models, R2 = r2, RMSE = rmse, MAE = mae)
+
+# Wykres R^2
+ggplot(metrics_df, aes(x = Model, y = R2)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  labs(title = "Porównanie R^2 dla modeli",
+       x = "Model", y = "R^2") +
+  theme_minimal()
+
+# Wykres RMSE
+ggplot(metrics_df, aes(x = Model, y = RMSE)) +
+  geom_bar(stat = "identity", fill = "lightgreen") +
+  labs(title = "Porównanie RMSE dla modeli",
+       x = "Model", y = "RMSE") +
+  theme_minimal()
+
+# Wykres MAE
+ggplot(metrics_df, aes(x = Model, y = MAE)) +
+  geom_bar(stat = "identity", fill = "lightpink") +
+  labs(title = "Porównanie MAE dla modeli",
+       x = "Model", y = "MAE") +
+  theme_minimal()
+```
+
+## Wnioski
+
+<br/>Na podstawie przedstawionych metryk jakości działania modeli regresji możemy wyciągnąć następujące wnioski:
+  
+  Random Forest osiągnął najwyższe wartości R^2, co oznacza, że ten model najlepiej przewiduje zależność między cechami a jakością wina. Ma również najniższe wartości RMSE i MAE, co wskazuje na jego dokładność w predykcji jakości wina.
+
+XGBoost osiągnął drugie najwyższe wartości R^2 oraz drugie najmniejsze wartości RMSE i MAE. Jest to również skuteczny model, który dobrze przewiduje jakość wina na podstawie cech.
+
+SVM osiągnął wartości R^2, RMSE i MAE pomiędzy KNN a XGBoost. Jest to średnio skuteczny model regresji, który przewiduje jakość wina, ale nieco mniej precyzyjnie niż XGBoost i Random Forest.
+
+KNN osiągnął najniższe wartości R^2 oraz najwyższe RMSE i MAE spośród wszystkich modeli. Oznacza to, że ten model regresji ma największe trudności w przewidywaniu jakości wina na podstawie cech.
+
+Na podstawie tych wyników można stwierdzić, że Random Forest i XGBoost są najbardziej skutecznymi modelami regresji do przewidywania jakości wina na podstawie dostępnych cech. Oba modele osiągnęły podobne wyniki, ale Random Forest może być nieco bardziej preferowanym modelem ze względu na minimalnie lepsze wyniki metryk jakości. Model KNN jest spośród tych 4 modeli najsłabszy, natomiast model SVM jest modelem średniej jakości w porównaniu do pozostałych modeli.
+
+Modele regresyjne można podzielić na lepsze i gorsze na podstawie wartości metryk jakie zwracają. Różnice między nimi nie są znaczące. Warto jednak zauważyć, że tym "lepszym" nadal daleko do bycia dokładnymi modelami. Jest to spowodowane najprawdopodobniej tym, że do predykcji jakości wina korzystamy z dużej ilości cech, ponieważ każda cecha jest ważna dla finalnego wyniku. W związku z tym modelom ciężko jest dokładnie przewidzieć finalną jakość danej próbki. Słowem końcowym, najdokładniejszym z tych mało dokładnych modeli jest Las Losowy, a najmniej dokładnym KNN.
+
+
+# Model sztucznej sieci neuronowej
+
+```{r, echo=FALSE, include=FALSE}
+#install.packages("tensorflow")
+#install_tensorflow()
+```
+
+```{r, echo=FALSE, include=FALSE}
+library(tensorflow)
+# Podział na część testową i uczącą
+set.seed(2023)
+inTrain <- createDataPartition(y=wine_data$quality,p=.8, list=FALSE)
+training <- wine_data[inTrain,]
+testing <- wine_data[-inTrain,]
+
+# Podział na zmienne niezależne ( X ) i zmienne zależne ( y ).
+X_train <- training %>% select(-quality)
+X_test <- testing %>% select(-quality)
+y_train <- training %>% select(quality)
+y_test <- testing %>% select(quality)
+
+# Preprocesing
+preProcValues <- preProcess(X_train, method = c("center", "scale", "nzv"))
+X_train <- predict(preProcValues, X_train)
+X_test <- predict(preProcValues, X_test)
+
+# Konwersja do macierzy
+X_train <- as.matrix(X_train)
+y_train <- as.matrix(y_train)
+X_test <- as.matrix(X_test)
+y_test <- as.matrix(y_test)
+
+# Głęboka sieć neuronowa
+tensorflow::set_random_seed(2023) # ustawienie seeda dla keras/tensorflow
+model <- keras_model_sequential()
+model %>%
+  layer_dense(units = 100, activation = 'relu', input_shape = c(ncol(X_train))) %>%
+  layer_dropout(rate=0.4) %>%
+  layer_dense(units = 50, activation = 'relu') %>%
+  layer_dropout(rate=0.2) %>%
+  layer_dense(units = 1)
+```
+
+## Podsumowanie modelu sztucznej sieci neuronowej
+```{r, echo=FALSE, include=TRUE}
+# Warstwy znajdujące się w sieci neuronowej i ich wymiary
+#model_summary <- summary(model)
+
+model_summary_df <- data.frame(
+  Layer = c("dense_2 (Dense)", "dropout_1 (Dropout)", "dense_1 (Dense)", "dropout (Dropout)", "dense (Dense)"),
+  Output_Shape = c("(None, 100)", "(None, 100)", "(None, 50)", "(None, 50)", "(None, 1)"),
+  Param = c(1200, 0, 5050, 0, 51),
+  stringsAsFactors = FALSE
+)
+
+additional_info_row <- data.frame(
+  Layer =  c(
+    paste("Total params:", 6301),
+    paste("Trainable params:", 6301),
+    paste("Non-trainable params:", 0)
+  ),
+  Output_Shape = "",
+  Param = "",
+  stringsAsFactors = FALSE
+)
+
+model_summary_df <- rbind(model_summary_df, additional_info_row)
+
+#Wyświetlanie tabeli
+kable(model_summary_df, format = "html") %>%
+  kable_styling(full_width = FALSE)
+```
+Opisany model jest sekwencyjnym modelem sieci neuronowej, składającym się z trzech warstw gęstych (fully connected). Pierwsza warstwa gęsta ma 100 neuronów, druga warstwa ma 50 neuronów, a trzecia warstwa ma tylko 1 neuron, który służy do wyjścia modelu. Dodatkowo w modelu zastosowano dwie warstwy Dropout. Warstwa Dropout ma za zadanie losowo wyłączać niektóre neurony w trakcie treningu, co pomaga w regularyzacji modelu i zapobiega nadmiernemu dopasowaniu (overfittingowi). Model ma łącznie 6 301 parametrów, które są trenowalne, co oznacza, że mogą być aktualizowane podczas procesu uczenia. Nie ma żadnych niemożliwych do trenowania parametrów w tym modelu.
+
+
+Do kompilacji modelu użyto optymalizatora RMSprop, funkcji straty MSE i metryki MAE. Model jest trenowany przez 100 epok. 20% zbioru uczącego służy jako zbiór walidacyjny podczas uczenia.
+```{r, echo=FALSE, include=FALSE}
+# Kompilacja modelu
+# Użyty optymalizator RMSprop, funkcja straty MSE, metryką MAE
+model %>% compile(loss = 'mse',
+                  optimizer = 'rmsprop',
+                  metrics = 'mae')
+
+history <- model %>%
+  fit(X_train,y_train,
+      epochs = 100,
+      batch_size = 32,
+      validation_split = 0.2)
+```
+
+## Wykresy funkcji straty oraz metryki MAE
+```{r, echo=FALSE, include=TRUE}
+# Wykresy funkcji straty oraz metryki MAE
+plot(history)
+```
+
+Można zauważyć, że przy upływie kolejnych epok, strata zbliża się do zera. W przypadku metryki MAE dzieje się podobnie.
+
+## Wartości funkcji straty oraz metryki MAE dla obserwacji ze zbioru testowego.
+```{r, echo=FALSE, include=TRUE}
+# Ewaluacja na zbiorze testowym
+evaluation <- model %>% evaluate(X_test, y_test)
+
+# Utworzenie tabeli HTML na podstawie wyników oceny
+evaluation_summary <- data.frame(
+  Metric = names(evaluation),
+  Value = unname(evaluation)
+)
+
+# Wyświetlenie tabeli HTML
+kable(evaluation_summary, format = "html", digits = 4, align = "c") %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+```{r, echo=FALSE, include=FALSE}
+pred <- model %>% predict(X_test)
+```
+
+## Wartość RMSE i R2 dla zbioru testowego
+```{r, echo=FALSE, include=TRUE}
+# Wartość RMSE dla zbioru testowego
+rmse_value <- RMSE(pred, y_test)
+r2_value <- R2(pred, y_test)
+
+# Utworzenie tabeli HTML z wynikiem RMSE i R2
+rmsr_r2_summary <- data.frame(
+  Metric = c("RMSE", "R2"),
+  Value = c(rmse_value, r2_value)
+)
+
+# Wyświetlanie tabeli HTML
+kable(rmsr_r2_summary, format = "html", digits = 4, align = "c") %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+## Porównanie z poprzednimi modelami i wnioski
+
+```{r, echo=FALSE, include=TRUE}
+# Tworzenie tabeli HTML
+table_models <- data.frame(
+  Model = c("KNN", "SVM", "XGBoost", "Random Forest", "Model sekwencyjny"),
+  R2 = c(round(knn_r2, 4), round(svm_r2, 4), round(xgb_r2, 4), round(rf_r2, 4), round(r2_value, 4)),
+  RMSE = c(round(knn_rmse, 4), round(svm_rmse, 4), round(xgb_rmse, 4), round(rf_rmse, 4), round(rmse_value, 4)),
+  MAE = c(round(knn_mae, 4), round(svm_mae, 4), round(xgb_mae, 4), round(rf_mae, 4), round(evaluation_summary[2, 2], 4))
+)
+
+table_models <- kable(table_models, format = "html", digits = 4, align = "c") %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+# Wyświetlanie tabeli HTML
+HTML(table_models)
+```
+
+Porównując modele KNN, Random Forest, SVM, XGBoost z nowo utworzonym modelem, możemy wywnioskować:
+
++ Wynik R2 dla nowo utworzonego modelu (0.357) jest nieco niższy niż dla Random Forest, SVM i XGBoost, ale wyższy niż dla KNN.
+
++ Nowo utworzony model ma nieco wyższe RMSE w porównaniu do Random Forest, SVM i XGBoost, ale niższe niż KNN.
+
++ Wartość MAE dla nowo utworzonego modelu jest najwyższa spośród wszystkich modeli.
+
+Podsumowując nowo utworzony model jest lepszy od modelu KNN. Modele Random Forest, SVM, XGBoost są bardziej skuteczne w przewidywaniu jakości wina na podstawie dostępnych cech.
+
+
+
+
+# Redukcja wymiarów w zbiorze
+## Metoda analizy składowych głównych (PCA)
+Jedną z metod redukcji wymiarów jest metoda analizy składowych głównych (ang. *principal component analysis, PCA*), która przekształca w sposób liniowy zbiór skorelowanych zmiennych (o wymiarze $p$) w zbiór zmiennych nieskorelowanych (o wymiarze $k \leq p$) nazywanych składowymi głównymi przy zachowaniu jak największego procenta wyjaśnianej wariancji oryginalnego zbioru.
+
+Otrzymany model PCA przedstawiony został poniżej:
+  
+```{r, echo=FALSE}
+pca_model <- prcomp(wine, scale = T)
+
+options(digits = 4)
+pods <- summary(pca_model)
+
+pods_df <- data.frame(pods$importance)
+rownames(pods_df) <- c("Odchylenie standardowe", "Procent wyjaśnianej wariancji", "Skumulowany proc. wariancji")
+
+kable(pods_df) %>% kable_styling(full_width=T)
+```
+
+### Analiza uzyskanych wartości wyjaśnianej wariancji
+Patrząc na procent wyjaśnianej wariancji możemy zauważyć, pierwsza składowa wyjaśnia ok. 26% wariancji, druga — 18,7%, trzecia — 14%, natomiast pozostałe cechy mają wpływ na wyjaśnienie 10% wariancji lub mniej.
+
+Na potrzeby poniższej analizy przyjęliśmy dopuszczalny próg 80% wyjaśnianej wariancji tzn. przyzwalamy na utratę maksymalnie 20% wariancji oryginalnych danych. W takiej sytuacji jesteśmy w stanie uzyskać pożądaną dokładność stosując pierwsze sześć składowych głównych zbudowanego modelu PCA. W przypadku użycia pięciu zmiennych składowych do ustalonego progu brakuje `0.47%` wariancji
+
+### Kryterium Keisera
+Liczbę składowych możemy również oszacować stosując kryterium Keisera. Zakłada ono, że w przypadku gdy zmienne wejściowe niosły ze sobą wariancje na poziomie 1, to każda składowa, którą chcemy włączyć do modelu, też powinna mieć wariancję równą co najmniej 1.
+
+Na podstawie tego kryterium, do modelu należałoby włączyć cztery pierwsze składowe. Możemy jednak zauważyć, że piąta składowa jedynie minimalnie nie spełnia podanego wyżej kryterium osiągając wartość `0.9794`. Powinniśmy mieć to na uwadze wybierając ostateczną liczbę czynników.
+
+### Wykres osuwiska
+Liczbę pozostałych składowych głównych możemy również oszacować stosując tzw. wykres osypiska (osuwiska). Przyjmując numer składowej jako wartości osi X oraz procent wyjaśnianej wariancji jako wartości osi Y, poszukujemy miejsca, od którego na prawo występuje łagodny spadek wartości własnych. Nie powinno się uwzględniać więcej czynników, niż te znajdujące się po lewej stronie tego punktu.
+
+```{r, echo=FALSE, warning=FALSE}
+x <- c(1:11)
+imp <- pods$importance %>% as.matrix()
+y <- unname(imp["Proportion of Variance",])
+rownames(y) <- NULL
+y <- as.vector(y)
+ggplot(data.frame(PC.number=x, Proportion.of.variance=y), aes(x=PC.number, y=Proportion.of.variance))+
+  geom_point()+
+  scale_x_discrete(limits=c(1:11))
+```
+
+Podobnie jak w przypadku poprzednich dwóch metod, wykres osypiska sugeruje przyjęcie pięciu bądź sześciu pierwszych składowych modelu - obserwując składową szóstą i dalsze możemy zauważyć złagodnienie spadku wartości własnych, szczególnie między 6. a siódmą.
+
+### Dobór liczby składowych
+Podsumowując uzyskane informacje:
+  
+  + kryterium Keisera sugeruje 4 składowe, z niewielkim odstępstwem wariancji 5. składowej;
+
++ z wykresu osypiska można przyjąć 6 składowych;
+
++ kryterium wyjaśnianej wariancji również sugeruje przyjęcie 6 składowych;
+
+Ostatecznie przyjmiemy sześć składowych głównych dla modelu.
+
+Analizując wpływ oryginalnych zmiennych na składowe główne możemy zauważyć, że
+
++ Na pierwszą składową główną największy wpływ miały kolejno: `fixed.acidity`, `citric.acid`, `pH`, `density`;
+
++ Na drugą składową główną największy wpływ miały kolejno: `total.sulfur.dioxide`, `free.sulfur.dioxide`, `alcohol`;
+
++ Na trzecią składową główną największy wpływ miały kolejno: `alcohol`, `violatile.acidity`, `free.sulfur.dioxide`, `density`, `total.sulfur.dioxide`;
+
++ Na czwartą składową główną największy wpływ miały kolejno: `clorides`, `sulphates`, `residual.sugar`;
+
++ Na piątą składową główną największy wpływ miały kolejno: `residual.sugar`, `alcohol`;
+
++ Na szóstą składową główną największy wpływ miały kolejno: `pH`, `violatile.acidity`, `density`, `sulphates`, `alcohol`, `chlorides`;
+
++ Na wszystkie składowe główne największy wpływ miały kolejno: `density`, `residual.sugar`, `alcohol`, `fixed.acidity`;
+
+```{r, echo=FALSE}
+p1 <- fviz_contrib(pca_model, choice = "var", axes = 1)
+p2 <- fviz_contrib(pca_model, choice = "var", axes = 2)
+p3 <- fviz_contrib(pca_model, choice = "var", axes = 3)
+p4 <- fviz_contrib(pca_model, choice = "var", axes = 4)
+p5 <- fviz_contrib(pca_model, choice = "var", axes = 5)
+p6 <- fviz_contrib(pca_model, choice = "var", axes = 6)
+p7 <- fviz_contrib(pca_model, choice = "var", axes = 1:6)
+
+ggpubr::ggarrange(p1,p2)
+ggpubr::ggarrange(p3,p4)
+ggpubr::ggarrange(p5,p6)
+p7
+```
+
+Ostateczne składowe główne prezentują się następująco (kolumnom zostały nadane nazwy odzwierciedlające znaczenie poszczególnych składowych:
+                                                         
+```{r, echo=FALSE}
+wine_pca <- pca_model$x[,1:6]
+colnames(wine_pca) <- c("acidity", "sulfur.alcohol", "aroma.profile", "flavor.profile", "sweetness", "chemical.composition")
+head(wine_pca) %>% kable() %>% kable_styling(full_width=T)
+```
+                                                       
+## Metoda analizy czynnikowej 
+### Dobór liczby czynników
+Inną metodą redukcji wymiarów jest metoda analizy czynników głównych (ang. *factor analysis, FA*), która pozwala na zredukowanie wielu zmiennych do mniejszej liczby niezależnych od siebie czynników głównych bez ponoszenia ryzyka, że odrzucone zmienne mogą mieć istotną wartość badawczą.
+                                                       
+Na początku analizy danych z użyciem metody analizy czynników przyjęliśmy 6 czynników, podobnie jak w przypadku poprzedniej metody. Jednocześnie poinstruowaliśmy algorytm, by użył macierzy korelacji zamiast macierzy kowariancji w procesie FA. Pozwoliło to uniknąć konieczności bezpośredniego stosowania standaryzacji zmiennych.
+                                                       
+W drodze eksperymentów dobraliśmy również stosowną metodę rotacji czynników w funkcji `principal`. Najlepsze wyniki uzyskaliśmy dla parametru `rotate="varimax"`, natomiast użycie parametru `rotate="none"` wskazał, że wpływ oryginalnych zmiennych nie jest równomierny dla czynników.
+                                                       
+```{r, include=FALSE}
+fa <- principal(wine, nfactors = 6, rotate = "varimax", covar = FALSE)
+```
+                                                       
+Informacje o koleracji między uzyskanymi czynnikami a oryginalnymi zmiennymi przedstawia tabela:
+                                                         
+```{r, echo=FALSE}
+loadings_df <- as.matrix.data.frame(fa[["loadings"]])
+rownames(loadings_df) = c("fixed.acidity", "volatile.acidity", "citric.acid", "residual.sugar", "chlorides", "free.sulfur.dioxide", "total.sulfur.dioxide", "density", "pH", "sulphates", "alcohol")
+colnames(loadings_df) = c("PC1", "PC2", "PC3", "PC4", "PC5", "PC6")
+                                                       
+kable(loadings_df) %>% kable_styling(full_width=T)
+```
+                                                       
+Odchylenie danych, procent wyjaśnianej wariancji, jego skumulowane wartości oraz wykres osuwiska prezentują się następująco:
+                                                         
+```{r, echo=FALSE}
+prop_var = fa$values/length(fa$values)*100
+cum_var = cumsum(prop_var)
+                                                       
+fa_pods <- t(data.frame(
+          sd = fa$values,
+          prop_var = prop_var,
+          cum_var = cum_var
+))
+                                                       
+colnames(fa_pods) = c("PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "PC11")
+rownames(fa_pods) = c("Odchylenie standardowe", "Procent wyjaśnianej wariancji", "Skumulowany proc. wariancji")
+                                                       
+kable(fa_pods) %>% kable_styling(full_width=T)
+                                                       
+data.frame(Factor.Num=c(1:11), Prop.Var=prop_var) %>% 
+ggplot(aes(x=Factor.Num, y=Prop.Var))+geom_point()
+```
+                                                       
+Kryteria doboru liczby czynników są podobne jak przy doborze składowych w PCA. Zatem nawiązując do poprzednich obliczeń oraz nowo-uzyskanych danych:
+                                                         
++ kryterium Keisera sugeruje 4 składowe, z ok. 4% odstępstwem wariancji 5. składowej (większym niż przy PCA);
+                                                       
++ z wykresu osypiska można przyjąć 6 składowych;
+                                                       
++ kryterium wyjaśnianej wariancji również sugeruje przyjęcie 6 składowych;
+                                                       
+Podsumowując poprzednio przyjęta liczba czynników okazała się adekwatna do wyników.
+                                                       
+### Analiza otrzymanych czynników
+                                                       
+```{r, echo=FALSE}
+fa.diagram(fa)
+```
+                                                       
++ Na pierwszy czynnik składają się zmienne `pH`, `fixed.acidity` oraz `citric.acid`. Z tego względu nazwiemy ten czynnik kwasowością (`acidity`);
+                                                       
++ Na drugi czynnik składają się zmienne `total.sulfur.dioxide` oraz `free.sulfur.dioxide`. Z tego względu nazwiemy ten czynnik poziomem dwutlenku siarki (`sulfur.dioxide.level`);
+                                                       
++ Na trzeci czynnik składają się zmienne `alcohol`, ``density`. Z tego względu nazwiemy ten czynnik stężeniem alkoholu (`alcohol.concentration`);
+
++ Na czwarty czynnik składają się zmienne `clorides`, `sulphates`. Z tego względu nazwiemy ten czynnik mieszanką chlorkowo-siarkową (`cloride.sulphate.mixture`);
+
++ Na piąty i szósty czynnik składają się pojedyncze zmienne `residual.sugar` oraz `violatile.acidity`. W związku z powyższym czynniki te otrzymają takie same nazwy co te zmienne.
+
+```{r, echo=FALSE}
+scores <- fa$scores %>% as.data.frame()
+colnames(scores) <- c("acidity", "sulfur.dioxide.level", "alcohol.concentration", "cloride.sulphate.mixture", "residual.sugar", "violatile.acidity")
+
+head(scores) %>% kable() %>% kable_styling(full_width=T)
+```
+
+Wartości w nowym układzie czynników dla poszczególnych obserwacji nie wykazują wyraźnej zależności między sobą - oznacza to, że czynniki nie są skorelowane.
+
+```{r, echo=FALSE}
+ggplot(scores, aes(x=acidity, y=sulfur.dioxide.level))+
+  geom_point()
+
+ggplot(scores, aes(x=acidity, y=alcohol.concentration))+
+  geom_point()
+
+ggplot(scores, aes(x=acidity, y=cloride.sulphate.mixture))+
+  geom_point()
+
+ggplot(scores, aes(x=acidity, y=residual.sugar))+
+  geom_point()
+
+ggplot(scores, aes(x=acidity, y=violatile.acidity))+
+  geom_point()
+
+ggplot(scores, aes(x=sulfur.dioxide.level, y=alcohol.concentration))+
+  geom_point()
+
+ggplot(scores, aes(x=sulfur.dioxide.level, y=cloride.sulphate.mixture))+
+  geom_point()
+
+ggplot(scores, aes(x=sulfur.dioxide.level, y=residual.sugar))+
+  geom_point()
+
+ggplot(scores, aes(x=sulfur.dioxide.level, y=violatile.acidity))+
+  geom_point()
+
+ggplot(scores, aes(x=alcohol.concentration, y=cloride.sulphate.mixture))+
+  geom_point()
+
+ggplot(scores, aes(x=alcohol.concentration, y=residual.sugar))+
+  geom_point()
+
+ggplot(scores, aes(x=alcohol.concentration, y=violatile.acidity))+
+  geom_point()
+
+ggplot(scores, aes(x=cloride.sulphate.mixture, y=residual.sugar))+
+  geom_point()
+
+ggplot(scores, aes(x=cloride.sulphate.mixture, y=violatile.acidity))+
+  geom_point()
+
+ggplot(scores, aes(x=residual.sugar, y=violatile.acidity))+
+  geom_point()
+```
+
+Podsumowując udało nam się zredukować liczbę czynników uwzględnianych przez model z 12 zmiennych do sześciu.
+
+## Podsumowanie
+W przypadku rozpatrywanego zbioru w obu przypadkach udało się zredukować liczbę rozważanych zmiennych do 6 czynników. Redukcja wymiarowości pozwoliła zredukować liczbę danych do analizy, zachowując jednocześnie jak najwięcej informacji. Dodatkowo pozwoliło to wyeliminować korelację pomiędzy zmiennym, jak również zredukować szumy i powtarzające się dane, co pozwoliło poprawić jakość analizy danych.
+
+Ostatecznie redukcja wymiarów z dwunastu do sześciu pozwoliła na przyspieszenie działania uzyskanych modeli bez utraty ich szczegółowości. Przeciwdziałała też częściowo zjawisku przeuczenia się modelu.
+
+# Analiza skupień
+Analiza skupień, klastrowanie, grupowanie (ang. *clustering, cluster analysis*) jest metodą znajdowania podgrup wśród obserwacji w zbiorze danych. Celem jest, aby obserwacje podobne znalazły się w tej samej grupie, a różniące się - w osobnych grupach.
+
+Warto zauważyć, że w badanym zbiorze nie znajduje się zmienna oznaczająca grupy — mamy do czynienia z uczeniem nienadzorowanym. Niezależnie od tego powinniśmy pamiętać, że przed przystąpieniem do grupowania przeprowadzamy standaryzację zmiennych.
+
+## Analiza hierarchiczna
+Metody hierarchiczne ogólnie można podzielić na aglomeracyjne i deglomeracyjne. W przypadku badanego zbioru danych posłużymy się metodą aglomeracyjną, która rozpoczyna tworzenie hierarchi od podziału zbioru n obserwacji na n jednoelementowych grup, które w kolejnych krokach są ze sobą scalane.
+
+Aby poprawić czytelność przeprowadzanej analizy, przeprowadziliśmy ją na 60-elementowym wycinku badanego zbioru.
+
+```{r, echo=FALSE}
+set.seed(123)
+idx <- sample(1:nrow(wine),size=60)
+wine_sample <- wine[idx, ]
+
+wine_ca <- as.data.frame(scale(wine))
+winesample_ca <- as.data.frame(scale(wine_sample))
+```
+
+### Macierz odległości
+W przypadku analizy zbioru danych na potrzeby regresji stosuje się zazwyczaj dwie metryki odległości: domyślną odległość euklidesowa oraz metrykę manhattan. Analizując heatmapy otrzymane dla obydwu macierzy, możemy stwierdzić, że wyglądają podobnie. W związku z powyższym, na potrzeby analizy przyjęliśmy metrykę manhattan.
+
+```{r, echo=FALSE}
+dist_mat <- dist(wine_ca)
+dist1 <- ggplot(melt(as.matrix(dist_mat)), aes(x = Var1, y = Var2, fill = value))+geom_tile()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+dist11 <- dist1+  coord_cartesian(xlim = c(1, 50), ylim = c(1, 50))
+
+dist_mat <- dist(wine_ca, method="manhattan")
+dist2 <- ggplot(melt(as.matrix(dist_mat)), aes(x = Var1, y = Var2, fill = value))+geom_tile()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+dist21 <- dist1+  coord_cartesian(xlim = c(1, 50), ylim = c(1, 50))
+
+grid.arrange(dist1, dist11, dist2, dist21, ncol=2)
+
+dist_mat <- dist(winesample_ca, method="manhattan")
+```
+
+### Sposób aglomeracji
+Oprócz odpowiedniego doboru metryki wyznaczania macierzy odległości istotnym wyborem jest dobranie sposobu aglomeracji otrzymanych danych pozwalających na optymalne łączenie klastrów. Eksperymentując z różnymi technikami łączenia zauważyliśmy, że:
+  
++ Aglomeracja complete (pełna) ma tendencję do tworzenia kompaktowych klastrów, w których obserwacje są blisko siebie.
+
++ Metoda Warda, choć stara się doprowadzić do równomiernego wzrostu klastrów tworząc klastry o minimalnej wariancji wewnętrznej, również nie jest odporna na komplikacje związane z dużą dysproporcją liczebności grup.
+
+Ostatecznie w toku przeprowadzonej analizy odkryliśmy, że dla rozpatrywanego wycinka zbioru optymalny jest podział na pięć skupisk z zastosowaniem metody Warda.D2. Efekty analizy zostały przedstawione na poniższych dendrogramach:
+  
+```{r, echo=FALSE, warning=FALSE}
+set.seed(123)
+# model z łączeniem metodą complete
+mod.hc <- hcut(winesample_ca, k = 5, stand = TRUE, hc_method = "complete")
+fviz_dend(mod.hc, rect = TRUE, cex = 0.5, horiz = T)
+
+# model z łączeniem metodą ward.D2
+mod.hc <- hcut(winesample_ca, k = 5, stand = TRUE, hc_method = "ward.D2")
+fviz_dend(mod.hc, rect = TRUE, cex = 0.5, horiz = T)
+
+mod.hc.ward <- hclust(dist_mat, method = "ward.D2" )
+plot(mod.hc.ward)
+rect.hclust(mod.hc.ward, k = 5, border = 1:5)
+```
+
+## Analiza niehierarchiczna metodą k-średnich i k-median
+Algorytmy analizy niehierarchicznej skupisk (klasteryzacji) metodą k-średnich i k-median są jednymi z najpopularniejszych algorytmów do podziału zbioru danych na klastry. Ich działanie opiera się na wstępnym wyborze parametru $k$ — decydującą o liczbie grup, które zostaną wyodrębnione ze zbioru danych.Następnie, W sposób losowy, wybiera się $k$ losowych centroidów (punktów centralnych) lub median jako początkowe przybliżenia klastrów. Po wstępnym wyborze klastrów każdy z elementów zbioru do najbliższej mu grupy, po czym dla każdego klastra obliczany jest nowy centroid/mediana na podstawie wszystkiech wartości przypisanych do klastra aż do momentu, gdy przypisanie przestanie się zmieniać.
+
+Wspomniane wyżej algorytmy są podatne na błędy związane z nieprawidłowym wyborem parametrów początkowych. Ponadto są szczególnie wrażliwe na wartości odstające, które mogą wpływać na jakość doboru położenia centroidów lub median.
+
+W celu poprawy wyników i zniwelowania wad tych algorytmów można stosować różne techniki, m. in. poprzez wykorzystanie innych miar odległości lub wag do ustalenia parametrów początkowych lub w procesie obliczania podobieństwa między obserwacjami.
+
+W związku z powyższym w początkowych fazach analizy zbiory za pomocą metod k-średnich i k-medoid przyjęliśmy liczbę 5. uzyskaną w poprzednim podrozdziale jako prawdopodobną dobrą liczbę skupień.
+
+```{r, echo=FALSE}
+mod.km <- kmeans(winesample_ca, centers = 5, nstart = 25)
+```
+
+Po dołączeniu numerów dla poszczególnych obserwacji badany zbiór prezentuje się następująco:
+  
+```{r, echo=FALSE, include=FALSE}
+mod.km$cluster
+```
+
+```{r, echo=FALSE}
+# dolaczenie numerow klastrow do zbioru:
+wine_clusters <- cbind(winesample_ca, mod.km$cluster)
+colnames(wine_clusters)[ncol(wine_clusters)] <- "ClusterNum"
+
+head(wine_clusters[1:6]) %>% kable() %>% kable_styling(full_width=T)
+head(wine_clusters[7:12]) %>% kable() %>% kable_styling(full_width=T)
+```
+
+Uzyskane klastry można przedstawić na wykresie klastrowym. Analizując otrzymany wykres możemy zauważyć, że część klastrów pokrywa się między sobą. Warto jednak nadmienić, że uzyskany wykres pokrywa jedynie dwa pierwsze wymiary opisujące ok. 53% wartości - nakładające się klastry mogą się różnić w dowolnym z pozostałych wymiarów, co nie będzie widoczne.
+
+```{r, echo=FALSE}
+fviz_cluster(mod.km, data=winesample_ca)
+```
+
+### Metoda łokcia
+Metoda łokciowa pozwala na dobranie liczby klastrów poprzez obliczenie wartości wewnętrznej sumy kwadratów (WCSS) dla różnych liczności klastrów. Metryka zakłada, że poprawnie przygotowane dane w klastrach są skoncentrowane wokół swoich centroidów. Oznacza to, że preferowaną liczbą klastrów następuje, dla której wartość WCSS zaczyna maleć wolniej, a dodatkowe klastry nie przynoszą już znaczącej poprawy. Podejście to przypomina metryki wykresów osypiska wykorzystywane w metodzie PCA.
+
+```{r, echo=FALSE}
+set.seed(123)
+# obliczenie i narysowanie WSS dla k od 2 do 15
+k.max <- 15 # maksymalna liczba klastrow
+wss <- sapply(1:k.max,
+              function(k){kmeans(winesample_ca, k, nstart=25)$tot.withinss})
+plot(1:k.max,wss,
+     type="b", pch=19, frame=FALSE,
+     xlab="Number of clusters K",
+     ylab="Total within-cluster sum of squares")
+abline(v=5, lty=2) # recznie wybieramy gdzie zaznaczyc, tutaj przy liczbie 4.
+```
+
+Na podstawie powyższego wykresu osypiska możemy przypuszczać, że najodpowiednią liczbą klastrów będzie wartość 5.
+
+#### Metoda sylwetkowa (silhouette)
+Metoda sylwetkowa ocenia jakość klastrów na podstawie dwóch miar:
+  
++ sylwetki wewnętrznej, która mierzy, jak dobrze punkt pasuje do swojego klastra w porównaniu z innymi klastrami.
+
++ Sylwetki zewnętrzna mierzącej, jak dobrze punkt pasuje do swojego klastra w porównaniu z punktami z innych klastrów.
+
+W metodzie sylwetkowej wybieramy liczby klastrów, dla których średnia wartość sylwetki jest największa - wartości bliższe maksimum wskazują na dobrze skoncentrowane i separowane klastry.
+
+```{r, echo=FALSE}
+silhouette_score <- function(k){
+  km <- kmeans(winesample_ca, centers = k, nstart=25)
+  ss <- silhouette(km$cluster, dist(winesample_ca))
+  mean(ss[, 3])
+}
+k <- 2:15
+avg_sil <- sapply(k, silhouette_score)
+plot(k, type='b', avg_sil, xlab='Number of clusters', ylab='Average Silhouette Scores', frame=FALSE)
+```
+
+Na podstawie powyższego wykresu kryterium sylwetkowego, najbardziej odpowiednie wydają się 2 lub 3 klastry.
+
+### Metoda Gap (gap statistic)
+W przypadku metody gap porównujemy wartość wewnętrznej sumy kwadratów (WCSS) dla rzeczywistych danych z wartościami WCSS dla losowych danych referencyjnych. Wybiera się liczbę klastrów, dla której różnica między WCSS rzeczywistymi danymi a WCSS danymi referencyjnymi jest największa. Wskazuje to na lepsze dopasowanie danych rzeczywistych do klastrów.
+```{r, echo=FALSE}
+set.seed(123)
+gap_stat <- clusGap(winesample_ca, FUN=kmeans, nstart=25, K.max=15, B=50)
+gap_table <- gap_stat$Tab
+
+kable(gap_table, format = "html", col.names = c("logW", "E.logW", "gap", "SE.sim"), align = "c") %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+plot(gap_stat, frame=FALSE, xlab="Number of clusters k")
+```
+
+Metryka gap badanego zbioru nie przestaje rosnąć, oznacza to, że nie można jednoznacznie określić optymalnej liczby klastrów na podstawie tej metody. Prawdopodobniedane są słabo ustrukturyzowane lub mają specyficzne właściwości, przez co metryka gap nie może dostarczyć jednoznacznej odpowiedzi.
+
+### Podsumowanie doboru liczby klastrów
+Podsumowując, poszczególne metody dały następujące wyniki:
+  
++ wykres osypiska (metoda łokcia) wskazał na optymalną liczbę 5 klastrów;
+
++ kryterium silhouette sugeruje 2 lub 3 klastry, wykres charakteryzuje się również odbiciem wartości w okolicy 5 klastrów przed ponownym spadkiem dokładności
+
++ statystyka gap nie daje jednoznacznej odpowiedzi.
+
+Uzwględniając otrzymane wyniki poszczególnych metryk, jak również wartości uzyskane podczas wcześniej przeprowadzonej hierarchicznej analizy skupień, zdecydowaliśmy się podzielić zbiór na 5 klastrów.
+
+## Zastosowanie podziału na klastry do analizy zmiennych
+Podział na klastry można wykorzystać do wizualizacji różnych cech w podziale na grupy. Przykładowo możemy zauważyć, że największą gęstość miały wina w stanach należących do klastra 3, a najmniej w klastrze 2. Tymczasem w przypadku zawartości dwutlenku siarki możemy zauważyć, że wartości w klastrach 3 i 4 wyraźnie przewyższają zawartość pozostałych klastrów.
+
+```{r, echo=FALSE}
+wine_clusters$ClusterNum <- as.factor(wine_clusters$ClusterNum)
+
+ggplot(wine_clusters, aes(x=ClusterNum, y=density, fill=ClusterNum))+
+  geom_boxplot()
+
+ggplot(wine_clusters, aes(x=ClusterNum, y=total.sulfur.dioxide, fill=ClusterNum))+
+  geom_boxplot()
+```
+Analizując szerzej otrzymane wyniki możemy zauważyć, że generalnie największe parametry mają wina w klastrach nr 2, 3 lub 4. Możemy również zobaczyć, że klaster nr 5 zawiera najmniej zróżnicowane pod kątem wartości próbki.
+
+```{r, echo=FALSE}
+# przedstawienie wszystkich zmiennych na wykresach
+data_longer <- pivot_longer(wine_clusters, cols=c("fixed.acidity", "volatile.acidity", "citric.acid", "residual.sugar", "chlorides", "free.sulfur.dioxide", "total.sulfur.dioxide", "density", "pH", "sulphates", "alcohol"), names_to="Variable", values_to="Value")
+ggplot(data_longer, aes(x=ClusterNum, y=Value, fill=ClusterNum))+
+  geom_boxplot()+
+  facet_wrap(~Variable, scale="free")
+
+wine_summarised <- wine_clusters %>% 
+  group_by(ClusterNum) %>% 
+  summarise(
+    fixed.acidity = mean(fixed.acidity),
+    volatile.acidity = mean(volatile.acidity),
+    citric.acid = mean(citric.acid),
+    residual.sugar = mean(residual.sugar),
+    chlorides = mean(chlorides),
+    free.sulfur.dioxide = mean(free.sulfur.dioxide),
+    total.sulfur.dioxide = mean(total.sulfur.dioxide),
+    density = mean(density),
+    pH = mean(pH),
+    sulphates = mean(sulphates),
+    alcohol = mean(alcohol)
+  ) %>% kable() %>% kable_styling(full_width=T)
+```
+
+## Podsumowanie
+W przypadku rozpatrywanego zbioru w obu przypadkach najbardziej optymalny okazał się podział na 5 klastrów. W przypadku analizy hierarchicznej, wyniki można przedstawić w postaci dendrogramu (drzewa binarnego) i na jego podstawie ocenić, jaka liczba grup jest optymalna bez uprzedniej znajomości podziału. W metodzie k-means/k-median musieliśmy z góry założyć liczbę skupień, na jaką chcemy podzielić zbiór, którą potem mogliśmy zweryfikować na podstawie kryteriów: osypiska (inaczej: łokcia), sylwetki (silhouette) i gap.
+
+Dodatkowo odkryliśmy, że dane zawarte w rozważanym fragmencie zbioru były słabo uporządkowane, co szczególnie odbiło się na wynikach metryki gap. Należy jednak zauważyć, że analizy czynników dokonywaliśmy jedynie na niewielkim wycinku badanego zbioru - wyniki uzyskane dla wszystkich obserwacji mogą się różnić; istnieje prawdopodobieństwo, że dla całego zbioru metryka gap dałaby satysfakcjonujące wyniki.
+
+
